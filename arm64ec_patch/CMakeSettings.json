@@ -1,0 +1,46 @@
+{
+  "configurations": [
+   {
+    "name": "Windows x64 Debug",
+	"configurationType": "Debug",
+    "generator": "Visual Studio 15 2017 Win64",
+    "buildRoot": "${projectDir}\\Solutions\\Win64_Debug",
+	"cmakeCommandArgs": "-D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-MSVC.cmake"
+   },
+   {
+    "name": "Windows x64 Profile",
+	"configurationType": "Profile",
+    "generator": "Visual Studio 15 2017 Win64",
+    "buildRoot": "${projectDir}\\Solutions\\Win64_Profile",
+	"cmakeCommandArgs": "-D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-MSVC.cmake"
+   },
+    {
+     "name": "Windows x64 Release",
+	"configurationType": "Release",
+    "generator": "Visual Studio 15 2017 Win64",
+    "buildRoot": "${projectDir}\\Solutions\\Win64_Release",
+	 "cmakeCommandArgs": "-D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-MSVC.cmake"
+    },
+    {
+     "name": "Windows ARM64EC Debug",
+     "configurationType": "Debug",
+     "generator": "Visual Studio 17 2022",
+     "buildRoot": "${projectDir}\\Solutions\\ARM64EC_Debug",
+     "cmakeCommandArgs": "-A ARM64EC -D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-ARM64EC-MSVC.cmake"
+    },
+    {
+     "name": "Windows ARM64EC Profile",
+     "configurationType": "Profile",
+     "generator": "Visual Studio 17 2022",
+     "buildRoot": "${projectDir}\\Solutions\\ARM64EC_Profile",
+     "cmakeCommandArgs": "-A ARM64EC -D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-ARM64EC-MSVC.cmake"
+    },
+    {
+     "name": "Windows ARM64EC Release",
+     "configurationType": "Release",
+     "generator": "Visual Studio 17 2022",
+     "buildRoot": "${projectDir}\\Solutions\\ARM64EC_Release",
+     "cmakeCommandArgs": "-A ARM64EC -D CMAKE_TOOLCHAIN_FILE=Tools\\CMake\\toolchain\\windows\\WindowsPC-ARM64EC-MSVC.cmake"
+    }
+ ]
+}
