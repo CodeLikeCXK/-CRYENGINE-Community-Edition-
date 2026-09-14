@@ -17,7 +17,6 @@
 	// use CRY_PLATFORM_ARM64EC to exclude x86-specific intrinsics.
 	#define CRY_PLATFORM_X64       1
 	#define CRY_PLATFORM_ARM64EC   1
-	#define CRY_PLATFORM_SSE2      0
 #elif defined(__x86_64__) || defined(_M_X64)
 	#define CRY_PLATFORM_X64       1
 	#define CRY_PLATFORM_SSE2      1

@@ -11,6 +11,7 @@ The patch includes:
 - Sandbox and module-extension platform handling.
 - ResourceCompiler ARM64EC external-project propagation.
 - ARM64EC-safe Opus, Vorbis, and OpusFile fallback paths.
+- C++ game templates with `win_arm64ec` native DLL selection.
 
 The ResourceCompiler outputs are expected under `Tools/rc` after building. The
 patch does not include generated binaries, SDK archives, build directories, or
