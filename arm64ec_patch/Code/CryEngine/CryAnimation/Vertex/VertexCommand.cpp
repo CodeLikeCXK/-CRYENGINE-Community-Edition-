@@ -10,12 +10,19 @@
 #pragma warning(push)
 #pragma warning(disable:4700) // uninitialized local variable
 #pragma warning(disable:6326) // potential comparison of a constant with another constant
+#pragma warning(disable:4163) // 'identifier': not available as an intrinsic function (arm64ec + neon)
 
+// ARM64EC: prefer native NEON over scalar fallback.
+// arm64ec excludes itself from the SSE path (CRY_PLATFORM_ARM64EC is defined).
+// We add a dedicated NEON branch so skinning runs at full vector throughput.
 #if (CRY_PLATFORM_WINDOWS && !CRY_PLATFORM_ARM64EC) || CRY_PLATFORM_DURANGO || CRY_PLATFORM_ORBIS
 	#define USE_VERTEXCOMMAND_SSE
 	#if CRY_PLATFORM_DURANGO || CRY_PLATFORM_ORBIS
 		#define USE_VERTEXCOMMAND_SSE4
 	#endif
+#elif CRY_PLATFORM_ARM64EC
+	#define USE_VERTEXCOMMAND_NEON
+	#include <arm_neon.h>
 #endif
 
 #ifdef USE_VERTEXCOMMAND_SSE
@@ -168,6 +175,130 @@ void VertexCommandTangents::Execute(VertexCommandTangents& command, CVertexData&
 		__m128i _compressed = _mm_packs_epi32(_tangenti, _bitangenti);
 
 		_mm_store_si128((__m128i*)&tangentBitangent[0], _compressed);
+
+		pTangents[idx] = SPipTangents(tangentBitangent[0], tangentBitangent[1], pTangents[idx]);
+	}
+}
+
+#elif defined(USE_VERTEXCOMMAND_NEON)
+
+// ---------------------------------------------------------------------------
+// ARM64EC NEON implementation of VertexCommandTangents
+// ---------------------------------------------------------------------------
+
+static ILINE float32x4_t neon_set4(float x, float y, float z, float w)
+{
+	float32x4_t r;
+	r.n128_f32[0] = x;
+	r.n128_f32[1] = y;
+	r.n128_f32[2] = z;
+	r.n128_f32[3] = w;
+	return r;
+}
+
+static ILINE float32x4_t neon_dot3_splat(float32x4_t a, float32x4_t b)
+{
+	float32x4_t m = vmulq_f32(a, b);
+	float s = vgetq_lane_f32(m, 0) + vgetq_lane_f32(m, 1) + vgetq_lane_f32(m, 2);
+	return vdupq_n_f32(s);
+}
+
+static ILINE float32x4_t neon_rsqrt_refined(float32x4_t v)
+{
+	float32x4_t est = vrsqrteq_f32(v);
+	float32x4_t step = vrsqrtsq_f32(v, est);
+	return vmulq_f32(est, step);
+}
+
+void VertexCommandTangents::Execute(VertexCommandTangents& command, CVertexData& vertexData)
+{
+	CRY_PROFILE_FUNCTION(PROFILE_ANIMATION);
+
+	strided_pointer<Vec3> pPositions = vertexData.GetPositions();
+	strided_pointer<SPipTangents> pTangents = vertexData.GetTangents();
+
+	for (uint i = 0; i < command.tangetUpdateDataCount; ++i)
+	{
+		const STangentUpdateTriangles& data = command.pTangentUpdateData[i];
+
+		const vtx_idx idx1 = data.idx1;
+		const vtx_idx idx2 = data.idx2;
+		const vtx_idx idx3 = data.idx3;
+
+		const Vec3& p1 = pPositions[idx1];
+		const Vec3& p2 = pPositions[idx2];
+		const Vec3& p3 = pPositions[idx3];
+
+		const float32x4_t v1 = neon_set4(p1.x, p1.y, p1.z, 0.0f);
+		const float32x4_t v2 = neon_set4(p2.x, p2.y, p2.z, 0.0f);
+		const float32x4_t v3 = neon_set4(p3.x, p3.y, p3.z, 0.0f);
+
+		const float32x4_t u = vsubq_f32(v2, v1);
+		const float32x4_t v = vsubq_f32(v3, v1);
+
+		const float ux = vgetq_lane_f32(u, 0), uy = vgetq_lane_f32(u, 1), uz = vgetq_lane_f32(u, 2);
+		const float vx = vgetq_lane_f32(v, 0), vy = vgetq_lane_f32(v, 1), vz = vgetq_lane_f32(v, 2);
+		const float32x4_t n = neon_set4(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx, 0.0f);
+
+		const float r = data.r;
+		const float32x4_t sdir = vmulq_f32(
+			vsubq_f32(vmulq_n_f32(u, data.t2), vmulq_n_f32(v, data.t1)),
+			vdupq_n_f32(r));
+
+		float32x4_t rt1_t = vld1q_f32(command.pRecTangets[idx1].t);
+		float32x4_t rt1_n = vld1q_f32(command.pRecTangets[idx1].n);
+		vst1q_f32(command.pRecTangets[idx1].t, vaddq_f32(rt1_t, sdir));
+		vst1q_f32(command.pRecTangets[idx1].n, vaddq_f32(rt1_n, n));
+
+		float32x4_t rt2_t = vld1q_f32(command.pRecTangets[idx2].t);
+		float32x4_t rt2_n = vld1q_f32(command.pRecTangets[idx2].n);
+		vst1q_f32(command.pRecTangets[idx2].t, vaddq_f32(rt2_t, sdir));
+		vst1q_f32(command.pRecTangets[idx2].n, vaddq_f32(rt2_n, n));
+
+		float32x4_t rt3_t = vld1q_f32(command.pRecTangets[idx3].t);
+		float32x4_t rt3_n = vld1q_f32(command.pRecTangets[idx3].n);
+		vst1q_f32(command.pRecTangets[idx3].t, vaddq_f32(rt3_t, sdir));
+		vst1q_f32(command.pRecTangets[idx3].n, vaddq_f32(rt3_n, n));
+	}
+
+	const float32x4_t c32767 = vdupq_n_f32(32767.0f);
+	CRY_ALIGN(16) Vec4sf tangentBitangent[2];
+
+	for (uint i = 0; i < command.tangetUpdateVertIdsCount; ++i)
+	{
+		const uint idx = command.pTangentUpdateVertIds[i];
+
+		float32x4_t rec_t = vld1q_f32(command.pRecTangets[idx].t);
+		float32x4_t rec_n = vld1q_f32(command.pRecTangets[idx].n);
+
+		// Clear in-place
+		vst1q_f32(command.pRecTangets[idx].t, vdupq_n_f32(0.0f));
+		vst1q_f32(command.pRecTangets[idx].n, vdupq_n_f32(0.0f));
+
+		// Normalize n
+		float32x4_t len2_n = neon_dot3_splat(rec_n, rec_n);
+		float32x4_t invLen_n = neon_rsqrt_refined(len2_n);
+		rec_n = vmulq_f32(rec_n, invLen_n);
+
+		// Gram-Schmidt orthogonalize tangent vs normal
+		float32x4_t nDotT = neon_dot3_splat(rec_n, rec_t);
+		float32x4_t tangent = vsubq_f32(rec_t, vmulq_f32(nDotT, rec_n));
+		float32x4_t len2_t = neon_dot3_splat(tangent, tangent);
+		float32x4_t invLen_t = neon_rsqrt_refined(len2_t);
+		tangent = vmulq_f32(tangent, invLen_t);
+
+		// bitangent = tangent x n
+		const float tx = vgetq_lane_f32(tangent, 0), ty = vgetq_lane_f32(tangent, 1), tz = vgetq_lane_f32(tangent, 2);
+		const float nx2 = vgetq_lane_f32(rec_n, 0),  ny2 = vgetq_lane_f32(rec_n, 1),  nz2 = vgetq_lane_f32(rec_n, 2);
+		const float32x4_t bitangent = neon_set4(ty * nz2 - tz * ny2, tz * nx2 - tx * nz2, tx * ny2 - ty * nx2, 0.0f);
+
+		// Pack to int16
+		int32x4_t ti = vcvtq_s32_f32(vmulq_f32(tangent,   c32767));
+		int32x4_t bi = vcvtq_s32_f32(vmulq_f32(bitangent, c32767));
+		int16x4_t ts = vqmovn_s32(ti);
+		int16x4_t bs = vqmovn_s32(bi);
+		int16x8_t compressed = vcombine_s16(ts, bs);
+		vst1q_s16((int16_t*)&tangentBitangent[0], compressed);
 
 		pTangents[idx] = SPipTangents(tangentBitangent[0], tangentBitangent[1], pTangents[idx]);
 	}
@@ -335,76 +466,161 @@ void VertexCommandSkin::Execute(VertexCommandSkin& command, CVertexData& vertexD
 	}
 }
 
-#ifndef USE_VERTEXCOMMAND_SSE
+#if defined(USE_VERTEXCOMMAND_NEON)
 
-/*
-   VertexCommandSkin
- */
+// ---------------------------------------------------------------------------
+// ARM64EC NEON implementation of VertexCommandSkin and VertexCommandAdd
+// ---------------------------------------------------------------------------
+
+static ILINE float32x4_t neon_quat_mul(float32x4_t a, float32x4_t b)
+{
+	const float ax = vgetq_lane_f32(a, 0), ay = vgetq_lane_f32(a, 1), az = vgetq_lane_f32(a, 2), aw = vgetq_lane_f32(a, 3);
+	const float bx = vgetq_lane_f32(b, 0), by = vgetq_lane_f32(b, 1), bz = vgetq_lane_f32(b, 2), bw = vgetq_lane_f32(b, 3);
+	return neon_set4(
+		aw * bx + ax * bw + ay * bz - az * by,
+		aw * by - ax * bz + ay * bw + az * bx,
+		aw * bz + ax * by - ay * bx + az * bw,
+		aw * bw - ax * bx - ay * by - az * bz
+	);
+}
+
+static ILINE float32x4_t neon_dualquat_mul_vec3(float32x4_t dq, float32x4_t nq, float32x4_t v)
+{
+	const float vx = vgetq_lane_f32(v, 0), vy = vgetq_lane_f32(v, 1), vz = vgetq_lane_f32(v, 2);
+	const float nqx = vgetq_lane_f32(nq, 0), nqy = vgetq_lane_f32(nq, 1), nqz = vgetq_lane_f32(nq, 2), nqw = vgetq_lane_f32(nq, 3);
+	const float dqx = vgetq_lane_f32(dq, 0), dqy = vgetq_lane_f32(dq, 1), dqz = vgetq_lane_f32(dq, 2), dqw = vgetq_lane_f32(dq, 3);
+
+	const float ax = nqy * vz - nqz * vy + nqw * vx;
+	const float ay = nqz * vx - nqx * vz + nqw * vy;
+	const float az = nqx * vy - nqy * vx + nqw * vz;
+
+	float x = (dqx * nqw - nqx * dqw + nqy * dqz - nqz * dqy) * 2.0f;
+	float y = (dqy * nqw - nqy * dqw + nqz * dqx - nqx * dqz) * 2.0f;
+	float z = (dqz * nqw - nqz * dqw + nqx * dqy - nqy * dqx) * 2.0f;
+
+	x += (az * nqy - ay * nqz) * 2.0f + vx;
+	y += (ax * nqz - az * nqx) * 2.0f + vy;
+	z += (ay * nqx - ax * nqy) * 2.0f + vz;
+
+	return neon_set4(x, y, z, 0.0f);
+}
 
 template<uint32 TEMPLATE_FLAGS>
 void VertexCommandSkin::ExecuteInternal(VertexCommandSkin& command, CVertexData& vertexData)
 {
 	CRY_PROFILE_FUNCTION(PROFILE_ANIMATION);
-	PREFAST_SUPPRESS_WARNING(6255)
-	DualQuat * pTransformations = (DualQuat*)alloca(command.transformationCount * sizeof(DualQuat));
+
+	float32x4_t pTransformations[MAX_JOINT_AMOUNT * 2];
 	for (uint i = 0; i < command.transformationCount; ++i)
 	{
-		pTransformations[i] = command.pTransformations[command.pTransformationRemapTable[i]];
+		const uint remap = command.pTransformationRemapTable[i];
+		pTransformations[i * 2 + 0] = vld1q_f32((const float*)&command.pTransformations[remap].dq);
+		pTransformations[i * 2 + 1] = vld1q_f32((const float*)&command.pTransformations[remap].nq);
 	}
 
 	const uint vertexCount = vertexData.GetVertexCount();
 	strided_pointer<Vec3> pPositions = vertexData.GetPositions();
 	strided_pointer<Vec3> pVelocities = vertexData.GetVelocities();
 	strided_pointer<SPipTangents> pTangents = vertexData.GetTangents();
-	strided_pointer<const Vec3> pPositionsPrevious = vertexData.pPreviousPositions;
+	strided_pointer<const Vec3> pPositionsPrevious = vertexData.GetPreviousPositions();
+
+	strided_pointer<const SoftwareVertexBlendIndex> pIndices = command.pVertexTransformIndices;
+	strided_pointer<const SoftwareVertexBlendWeight> pWeights = command.pVertexTransformWeights;
 
 	strided_pointer<const Vec3> pPositionsSource = command.pVertexPositions;
 	if (!pPositionsSource.data)
 		pPositionsSource = vertexData.pPositions;
 
-	DualQuat dq;
-	const DualQuat* dqTransform;
-	float dqLengthInv;
-	Quat qtangent;
-	float flip;
-	Vec3 newPos;
+	const float Inv255 = 1.0f / 255.0f;
+	const float32x4_t c32767 = vdupq_n_f32(32767.0f);
+	CRY_ALIGN(16) Vec4sf tangentBitangent[2];
 
 	for (uint i = 0; i < vertexCount; ++i)
 	{
-		dq.SetZero();
+		const SoftwareVertexBlendIndex* pVertexIndices = &pIndices[i];
+		const uint8* pW = (const uint8*)&pWeights[i];
 
-		const SoftwareVertexBlendIndex* pBlendIndices = &command.pVertexTransformIndices[i];
-		const SoftwareVertexBlendWeight* pBlendWeights = &command.pVertexTransformWeights[i];
-		const uint64 weights8 = *(uint64*)pBlendWeights;
-		for (uint j = 0; j < command.vertexTransformCount; ++j)
+		// Blend first bone
+		float w0 = (float)pW[0] * Inv255;
+		float32x4_t dq_dq = vmulq_n_f32(pTransformations[pVertexIndices[0] * 2 + 0], w0);
+		float32x4_t dq_nq = vmulq_n_f32(pTransformations[pVertexIndices[0] * 2 + 1], w0);
+
+		// Blend remaining active bones
+		for (uint j = 1; j < command.vertexTransformCount; ++j)
 		{
-			const uint transformIndex = pBlendIndices[j];
-			const float transformWeight = ((weights8 >> (j * 8)) & 0xff) / 255.f;
-			dqTransform = &pTransformations[transformIndex];
-			dq.dq.v.x += dqTransform->dq.v.x * transformWeight;
-			dq.dq.v.y += dqTransform->dq.v.y * transformWeight;
-			dq.dq.v.z += dqTransform->dq.v.z * transformWeight;
-			dq.dq.w += dqTransform->dq.w * transformWeight;
-			dq.nq.v.x += dqTransform->nq.v.x * transformWeight;
-			dq.nq.v.y += dqTransform->nq.v.y * transformWeight;
-			dq.nq.v.z += dqTransform->nq.v.z * transformWeight;
-			dq.nq.w += dqTransform->nq.w * transformWeight;
+			if (pW[j] == 0)
+				break;
+			float w = (float)pW[j] * Inv255;
+			dq_dq = vmlaq_n_f32(dq_dq, pTransformations[pVertexIndices[j] * 2 + 0], w);
+			dq_nq = vmlaq_n_f32(dq_nq, pTransformations[pVertexIndices[j] * 2 + 1], w);
 		}
 
-		dqLengthInv = isqrt_fast_tpl(dq.nq.v.x * dq.nq.v.x + dq.nq.v.y * dq.nq.v.y + dq.nq.v.z * dq.nq.v.z + dq.nq.w * dq.nq.w);
-		dq.nq *= dqLengthInv;
-		dq.dq *= dqLengthInv;
+		// Normalize dq_nq (dot4 + refined rsqrt)
+		float nqx = vgetq_lane_f32(dq_nq, 0), nqy = vgetq_lane_f32(dq_nq, 1), nqz = vgetq_lane_f32(dq_nq, 2), nqw = vgetq_lane_f32(dq_nq, 3);
+		float lenSq = nqx * nqx + nqy * nqy + nqz * nqz + nqw * nqw;
+		float invLen;
+		if (lenSq > 1e-12f)
+		{
+			float32x4_t vLenSq = vdupq_n_f32(lenSq);
+			float32x4_t nr = vrsqrteq_f32(vLenSq);
+			nr = vmulq_f32(nr, vrsqrtsq_f32(vLenSq, nr));
+			invLen = vgetq_lane_f32(nr, 0);
+		}
+		else
+		{
+			invLen = 1.0f;
+		}
 
-		qtangent = dq.nq * command.pVertexQTangents[i];
-		if (qtangent.w < 0.0f)
-			qtangent = -qtangent;
-		flip = command.pVertexQTangents[i].w < 0.0f ? -1.0f : 1.0f;
-		qtangent *= flip;
+		dq_nq = vmulq_n_f32(dq_nq, invLen);
+		dq_dq = vmulq_n_f32(dq_dq, invLen);
 
-		newPos = dq * pPositionsSource[i];
+		// Transform position
+		const float* pSrc = (const float*)&pPositionsSource[i];
+		float32x4_t posIn = neon_set4(pSrc[0], pSrc[1], pSrc[2], 0.0f);
+		float32x4_t newPosV = neon_dualquat_mul_vec3(dq_dq, dq_nq, posIn);
+		Vec3 newPos(vgetq_lane_f32(newPosV, 0), vgetq_lane_f32(newPosV, 1), vgetq_lane_f32(newPosV, 2));
 
-		pPositions[i] = newPos;
-		pTangents[i] = SPipTangents(qtangent, (int16)flip);
+		// Transform tangent / QTangent
+		float32x4_t qtanIn;
+		if (command.pVertexQTangents.data)
+		{
+			qtanIn = vld1q_f32((const float*)&command.pVertexQTangents[i]);
+		}
+		else
+		{
+			qtanIn = neon_set4(0.0f, 0.0f, 1.0f, 1.0f);
+		}
+
+		float flipSrc = vgetq_lane_f32(qtanIn, 3) < 0.0f ? -1.0f : 1.0f;
+		float32x4_t qtan = neon_quat_mul(dq_nq, qtanIn);
+		if (vgetq_lane_f32(qtan, 3) < 0.0f)
+		{
+			qtan = vnegq_f32(qtan);
+		}
+		qtan = vmulq_n_f32(qtan, flipSrc);
+
+		// Compute column0 (tangent) and column1 (bitangent)
+		float qx = vgetq_lane_f32(qtan, 0), qy = vgetq_lane_f32(qtan, 1), qz = vgetq_lane_f32(qtan, 2), qw = vgetq_lane_f32(qtan, 3);
+		float32x4_t col0 = neon_set4(
+			2.0f * (qx * qx + qw * qw) - 1.0f,
+			2.0f * (qy * qx + qz * qw),
+			2.0f * (qz * qx - qy * qw),
+			flipSrc
+		);
+		float32x4_t col1 = neon_set4(
+			2.0f * (qx * qy - qz * qw),
+			2.0f * (qy * qy + qw * qw) - 1.0f,
+			2.0f * (qz * qy + qx * qw),
+			flipSrc
+		);
+
+		// Pack to int16
+		int32x4_t col0i = vcvtq_s32_f32(vmulq_f32(col0, c32767));
+		int32x4_t col1i = vcvtq_s32_f32(vmulq_f32(col1, c32767));
+		int16x4_t c0s = vqmovn_s32(col0i);
+		int16x4_t c1s = vqmovn_s32(col1i);
+		int16x8_t compressed = vcombine_s16(c0s, c1s);
+		vst1q_s16((int16_t*)&tangentBitangent[0], compressed);
 
 		if ((TEMPLATE_FLAGS & VELOCITY_VECTOR) != 0)
 		{
@@ -414,10 +630,31 @@ void VertexCommandSkin::ExecuteInternal(VertexCommandSkin& command, CVertexData&
 		{
 			memset(&pVelocities[i], 0, sizeof(Vec3));
 		}
+
+		pPositions[i] = newPos;
+		pTangents[i] = SPipTangents(tangentBitangent[0], tangentBitangent[1]);
 	}
 }
 
-#else
+void VertexCommandAdd::Execute(VertexCommandAdd& command, CVertexData& vertexData)
+{
+	CRY_PROFILE_FUNCTION(PROFILE_ANIMATION);
+
+	strided_pointer<Vec3> pPositions = vertexData.GetPositions();
+	const float weight = command.weight;
+	const uint count = command.count;
+	for (uint i = 0; i < count; ++i)
+	{
+		const uint index = command.pIndices[i];
+		Vec3* __restrict pPos = &pPositions[index];
+		const Vec3& v = command.pVectors[i];
+		pPos->x += v.x * weight;
+		pPos->y += v.y * weight;
+		pPos->z += v.z * weight;
+	}
+}
+
+#elif defined(USE_VERTEXCOMMAND_SSE)
 
 const int zero = 0;
 const int flipSign = 0x80000000;
@@ -757,6 +994,88 @@ void VertexCommandAdd::Execute(VertexCommandAdd& command, CVertexData& vertexDat
 	#endif
 
 		_mm_storeu_ps((float*)pPosition, _loadPos);
+	}
+}
+
+#else
+
+/*
+   VertexCommandSkin
+ */
+
+template<uint32 TEMPLATE_FLAGS>
+void VertexCommandSkin::ExecuteInternal(VertexCommandSkin& command, CVertexData& vertexData)
+{
+	CRY_PROFILE_FUNCTION(PROFILE_ANIMATION);
+	PREFAST_SUPPRESS_WARNING(6255)
+	DualQuat * pTransformations = (DualQuat*)alloca(command.transformationCount * sizeof(DualQuat));
+	for (uint i = 0; i < command.transformationCount; ++i)
+	{
+		pTransformations[i] = command.pTransformations[command.pTransformationRemapTable[i]];
+	}
+
+	const uint vertexCount = vertexData.GetVertexCount();
+	strided_pointer<Vec3> pPositions = vertexData.GetPositions();
+	strided_pointer<Vec3> pVelocities = vertexData.GetVelocities();
+	strided_pointer<SPipTangents> pTangents = vertexData.GetTangents();
+	strided_pointer<const Vec3> pPositionsPrevious = vertexData.pPreviousPositions;
+
+	strided_pointer<const Vec3> pPositionsSource = command.pVertexPositions;
+	if (!pPositionsSource.data)
+		pPositionsSource = vertexData.pPositions;
+
+	DualQuat dq;
+	const DualQuat* dqTransform;
+	float dqLengthInv;
+	Quat qtangent;
+	float flip;
+	Vec3 newPos;
+
+	for (uint i = 0; i < vertexCount; ++i)
+	{
+		dq.SetZero();
+
+		const SoftwareVertexBlendIndex* pBlendIndices = &command.pVertexTransformIndices[i];
+		const SoftwareVertexBlendWeight* pBlendWeights = &command.pVertexTransformWeights[i];
+		const uint64 weights8 = *(uint64*)pBlendWeights;
+		for (uint j = 0; j < command.vertexTransformCount; ++j)
+		{
+			const uint transformIndex = pBlendIndices[j];
+			const float transformWeight = ((weights8 >> (j * 8)) & 0xff) / 255.f;
+			dqTransform = &pTransformations[transformIndex];
+			dq.dq.v.x += dqTransform->dq.v.x * transformWeight;
+			dq.dq.v.y += dqTransform->dq.v.y * transformWeight;
+			dq.dq.v.z += dqTransform->dq.v.z * transformWeight;
+			dq.dq.w += dqTransform->dq.w * transformWeight;
+			dq.nq.v.x += dqTransform->nq.v.x * transformWeight;
+			dq.nq.v.y += dqTransform->nq.v.y * transformWeight;
+			dq.nq.v.z += dqTransform->nq.v.z * transformWeight;
+			dq.nq.w += dqTransform->nq.w * transformWeight;
+		}
+
+		dqLengthInv = isqrt_fast_tpl(dq.nq.v.x * dq.nq.v.x + dq.nq.v.y * dq.nq.v.y + dq.nq.v.z * dq.nq.v.z + dq.nq.w * dq.nq.w);
+		dq.nq *= dqLengthInv;
+		dq.dq *= dqLengthInv;
+
+		qtangent = dq.nq * command.pVertexQTangents[i];
+		if (qtangent.w < 0.0f)
+			qtangent = -qtangent;
+		flip = command.pVertexQTangents[i].w < 0.0f ? -1.0f : 1.0f;
+		qtangent *= flip;
+
+		newPos = dq * pPositionsSource[i];
+
+		pPositions[i] = newPos;
+		pTangents[i] = SPipTangents(qtangent, (int16)flip);
+
+		if ((TEMPLATE_FLAGS & VELOCITY_VECTOR) != 0)
+		{
+			pVelocities[i] = pPositionsPrevious[i] - newPos;
+		}
+		else if ((TEMPLATE_FLAGS & VELOCITY_ZERO) != 0)
+		{
+			memset(&pVelocities[i], 0, sizeof(Vec3));
+		}
 	}
 }
 
