@@ -38,7 +38,11 @@ extern "C" {
 #endif
 
 #ifdef USE_SIMD
-# include <xmmintrin.h>
+# if defined(_M_ARM64EC) || defined(_ARM64EC_) || defined(__arm64ec__) || defined(_M_ARM64)
+#  include <intrin.h>
+# else
+#  include <xmmintrin.h>
+# endif
 # define kiss_fft_scalar __m128
 #define KISS_FFT_MALLOC(nbytes) memalign(16,nbytes)
 #else

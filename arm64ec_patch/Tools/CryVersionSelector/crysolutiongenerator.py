@@ -453,7 +453,7 @@ else()
     add_library(GameServer STATIC "$${CRYENGINE_DIR}/Code/CryEngine/CryCommon/CryCore/Platform/platform.h")
     set_target_properties(GameServer PROPERTIES LINKER_LANGUAGE CXX)
     if (WIN32)
-        set_visual_studio_debugger_command(GameServer "$${CRYENGINE_DIR}/bin/win_x64/Game_Server.exe" "-project \\"$${PROJECT_DIR}/$project_file_name\\"")
+        set_visual_studio_debugger_command(GameServer "$${OUTPUT_DIRECTORY}/Game_Server.exe" "-project \\"$${PROJECT_DIR}/$project_file_name\\"")
     endif()
 endif()\n''')
     cmake_launcher_projects = launcher_projects.substitute(

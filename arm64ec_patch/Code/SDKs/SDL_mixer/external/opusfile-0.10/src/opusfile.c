@@ -26,7 +26,11 @@
 #include <string.h>
 #include <math.h>
 #if defined(_WIN64) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(_M_ARM64EC) || defined(_ARM64EC_) || defined(__arm64ec__) || defined(_M_ARM64)
+#include <intrin.h>
+#else
 #include <xmmintrin.h>
+#endif
 #endif
 #include "opusfile.h"
 

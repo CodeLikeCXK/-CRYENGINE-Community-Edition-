@@ -98,7 +98,11 @@
 #define float2int(x) lrint(x)
 
 #elif (defined(_MSC_VER) && _MSC_VER >= 1400) && (defined (WIN64) || defined (_WIN64))
+#if defined(_M_ARM64EC) || defined(_ARM64EC_) || defined(__arm64ec__) || defined(_M_ARM64)
+        #include <intrin.h>
+#else
         #include <xmmintrin.h>
+#endif
 
         __inline long int float2int(float value)
         {

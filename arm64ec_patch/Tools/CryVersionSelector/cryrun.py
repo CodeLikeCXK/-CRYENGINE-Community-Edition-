@@ -28,6 +28,16 @@ except ImportError:
 
 # --- helpers
 
+def get_default_platform():
+    """Prefer ARM64EC on Windows ARM when the engine has that build."""
+    architecture = os.environ.get('PROCESSOR_ARCHITEW6432', os.environ.get('PROCESSOR_ARCHITECTURE', ''))
+    if architecture.upper() in ('ARM64', 'ARM64EC'):
+        arm64ec_sandbox = os.path.join(
+            crypath.get_engine_path(), 'bin', 'win_arm64ec', 'Sandbox.exe')
+        if os.path.isfile(arm64ec_sandbox):
+            return 'win_arm64ec'
+    return 'win_x64'
+
 def get_available_configs():
     return [
         # Visual Studio 15 2017
@@ -814,7 +824,7 @@ def cmd_metagen(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--platform', default='win_x64',
+    parser.add_argument('--platform', default=get_default_platform(),
                         choices=('win_x64', 'win_arm64ec'))
     parser.add_argument('--config', default='RelWithDebInfo',
                         choices=('Debug', 'Release', 'RelWithDebInfo',

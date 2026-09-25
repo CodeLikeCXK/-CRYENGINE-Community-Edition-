@@ -26,8 +26,8 @@
 
 #if CRY_PLATFORM_SSE2 && !CRY_PLATFORM_ARM64EC
 	#include <xmmintrin.h>
-#elif CRY_PLATFORM_NEON && !CRY_PLATFORM_ARM64EC
-	#include "arm_neon.h"
+#elif CRY_PLATFORM_NEON
+	#include <arm_neon.h>
 #endif
 
 //! Only enable math asserts in debug builds
@@ -209,10 +209,20 @@ ILINE f32 sqrt_fast(f32 op)  { return rsqrt_fast(max(op, FLT_MIN)) * op; }
 
 #else
 
-ILINE f32 rcp(f32 op)      { return 1.0f / op; }
-ILINE f32 rcp_fast(f32 op) { return 1.0f / op; }
+	#if CRY_PLATFORM_NEON && !CRY_PLATFORM_ARM64EC
 
-	#if CRY_PLATFORM_NEON
+template<int n>
+float rcp_helper(float f)
+{
+	float32x2_t v = vdup_n_f32(f);
+	float32x2_t r = vrecpe_f32(v);
+	for (int i = 0; i <= n; ++i)
+		r = vmul_f32(vrecps_f32(v, r), r);
+	return vget_lane_f32(r, 0);
+}
+
+ILINE f32 rcp(f32 op)        { return rcp_helper<1>(op); }
+ILINE f32 rcp_fast(f32 op)   { return rcp_helper<0>(op); }
 
 template<int n>
 float rsqrt_helper(float f)
@@ -231,9 +241,12 @@ ILINE f32 rsqrt_fast(f32 op) { return rsqrt_helper<0>(op); }
 
 	#else
 
-ILINE f32 sqrt_fast(f32 op)  { return sqrt(op); }
-ILINE f32 rsqrt(f32 op)      { return 1.0f / sqrt(op); }
-ILINE f32 rsqrt_fast(f32 op) { return rsqrt(op); }
+ILINE f32 rcp(f32 op)      { return 1.0f / op; }
+ILINE f32 rcp_fast(f32 op) { return 1.0f / op; }
+
+ILINE f32 sqrt_fast(f32 op)  { return sqrt(max(op, 0.0f)); }
+ILINE f32 rsqrt(f32 op)      { return (op > 0.0f) ? (1.0f / sqrt(op)) : 0.0f; }
+ILINE f32 rsqrt_fast(f32 op) { return (op > 0.0f) ? (1.0f / sqrt(op)) : 0.0f; }
 
 	#endif
 
